@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WA Schedule</string>
+    <string name="a11y_desc">Preme il pulsante Invia di WhatsApp per i messaggi programmati. Non legge né memorizza nulla.</string>
+</resources>
