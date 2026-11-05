@@ -7,7 +7,10 @@ import android.net.Uri
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
-        val m = Store.all(c).find { it.id == i.getLongExtra("id", 0) } ?: return
+        val id = i.getLongExtra("id", 0)
+        // The URI fallback also handles alarms that were created by an older app version.
+        val at = i.getLongExtra("at", i.data?.lastPathSegment?.toLongOrNull() ?: 0L)
+        val m = Store.consume(c, id, at) ?: return
         SendService.armedAt = System.currentTimeMillis() // autorizza il click su "Invia"
         runCatching {
             c.startActivity(
@@ -20,5 +23,5 @@ class AlarmReceiver : BroadcastReceiver() {
 
 // Gli alarm spariscono al riavvio: li ricreo.
 class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(c: Context, i: Intent) = Store.all(c).forEach { Store.schedule(c, it) }
+    override fun onReceive(c: Context, i: Intent) = Store.restoreAlarms(c)
 }
