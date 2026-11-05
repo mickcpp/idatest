@@ -435,7 +435,7 @@ class MainActivity : Activity() {
                 return
             }
             val selectedDays = dayChecks.filterValues { it.isChecked }.keys.toList()
-            val first = if (modePosition == 2) firstWeeklyAtOrAfter(requestedStart, selectedDays) else requestedStart
+            val first = if (modePosition == 2) firstWeeklyAtOrAfter(requestedStart, selectedDays.toSet()) else requestedStart
             if (modePosition == 2 && selectedDays.isEmpty()) {
                 toast("Seleziona almeno un giorno della settimana")
                 return
