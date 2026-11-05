@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">WA Schedule</string>
-    <string name="a11y_desc">Subito dopo l'orario programmato individua e preme il pulsante Invia in WhatsApp. Non salva il contenuto delle schermate.</string>
+    <string name="a11y_desc">Subito dopo l\'orario programmato individua e preme il pulsante Invia in WhatsApp. Non salva il contenuto delle schermate.</string>
 </resources>
