@@ -405,8 +405,9 @@ class MainActivity : Activity() {
         }
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
+            // Some document providers report .json as application/octet-stream; let the
+            // picker show it anyway and validate the actual JSON contents after selection.
             type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/json", "text/plain"))
         }
         try {
             startActivityForResult(intent, 2)
