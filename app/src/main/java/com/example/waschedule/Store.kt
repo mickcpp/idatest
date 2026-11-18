@@ -26,7 +26,8 @@ data class Msg(
     // Inclusive end of the selected local calendar day.
     val untilAt: Long? = null,
     val sentCount: Int = 0,
-    val nextAt: Long? = null
+    val nextAt: Long? = null,
+    val sourceBatchId: String? = null
 )
 
 object Store {
@@ -51,7 +52,8 @@ object Store {
                 repeatCount = if (o.has("repeatCount") && !o.isNull("repeatCount")) o.getInt("repeatCount") else null,
                 untilAt = if (o.has("untilAt") && !o.isNull("untilAt")) o.getLong("untilAt") else null,
                 sentCount = o.optInt("sentCount", 0),
-                nextAt = if (o.has("nextAt") && !o.isNull("nextAt")) o.getLong("nextAt") else null
+                nextAt = if (o.has("nextAt") && !o.isNull("nextAt")) o.getLong("nextAt") else null,
+                sourceBatchId = o.optString("sourceBatchId").takeIf { it.isNotBlank() }
             )
         }
     }
@@ -72,7 +74,8 @@ object Store {
                 .put("repeatCount", m.repeatCount)
                 .put("untilAt", m.untilAt)
                 .put("sentCount", m.sentCount)
-                .put("nextAt", m.nextAt))
+                .put("nextAt", m.nextAt)
+                .put("sourceBatchId", m.sourceBatchId))
         }
         prefs(c).edit().putString("list", arr.toString()).apply()
     }
@@ -82,11 +85,39 @@ object Store {
         schedule(c, m)
     }
 
+    /** Replaces one imported batch in a single preference write, then schedules its alarms. */
+    fun replaceBatch(c: Context, batchId: String, imported: List<Msg>): Int {
+        val current = all(c)
+        val replaced = current.filter { it.sourceBatchId == batchId }
+        val nextId = maxOf(
+            System.currentTimeMillis(),
+            (current.maxOfOrNull { it.id } ?: 0L) + 1L
+        )
+        val identified = imported.mapIndexed { index, message ->
+            message.copy(id = nextId + index, sourceBatchId = batchId)
+        }
+        val updated = current.filterNot { it.sourceBatchId == batchId } + identified
+        // Persist first. If the process stops here, old alarms are harmless: consume() checks stored IDs.
+        save(c, updated)
+        replaced.forEach { old ->
+            old.times.forEach { cancel(c, old.id, it) }
+            old.nextAt?.let { cancel(c, old.id, it) }
+        }
+        identified.forEach { schedule(c, it) }
+        return replaced.size
+    }
+
+    fun countBatch(c: Context, batchId: String): Int = all(c).count { it.sourceBatchId == batchId }
+
     fun remove(c: Context, m: Msg) {
         val am = c.getSystemService(AlarmManager::class.java)
-        m.times.forEach { am.cancel(pendingIntent(c, m.id, it)) }
-        m.nextAt?.let { am.cancel(pendingIntent(c, m.id, it)) }
+        m.times.forEach { cancel(c, m.id, it) }
+        m.nextAt?.let { cancel(c, m.id, it) }
         save(c, all(c).filter { it.id != m.id })
+    }
+
+    private fun cancel(c: Context, id: Long, at: Long) {
+        c.getSystemService(AlarmManager::class.java).cancel(pendingIntent(c, id, at))
     }
 
     /** Recreates only the next occurrence for a recurrence, or every remaining one-off date. */

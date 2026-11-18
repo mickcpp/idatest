@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.AlarmManager
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -21,6 +23,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.*
 import java.text.SimpleDateFormat
+import java.io.ByteArrayOutputStream
 import java.util.Calendar
 import java.util.Locale
 
@@ -143,6 +146,12 @@ class MainActivity : Activity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }, 8)
         root.addView(settingsCard, cardParams())
+
+        val (importCard, importContent) = card("Importa da file")
+        importContent.addView(label("Carica un JSON per creare in blocco messaggi con parola chiave, destinatario e orari giornalieri.", 14f, muted))
+        addField(importContent, button("Seleziona file JSON") { chooseImportFile() }, 8)
+        addField(importContent, button("Formato e esempio") { showImportHelp() }, 4)
+        root.addView(importCard, cardParams())
 
         val (formCard, form) = card("Nuovo messaggio")
         name = input("Nome, per esempio: promemoria")
@@ -387,11 +396,164 @@ class MainActivity : Activity() {
         return null
     }
 
+    private fun chooseImportFile() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) {
+            startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+            toast("Consenti gli allarmi precisi, poi seleziona di nuovo il file")
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/json", "text/plain"))
+        }
+        try {
+            startActivityForResult(intent, 2)
+        } catch (_: Exception) {
+            toast("Non è disponibile un selettore di file su questo dispositivo")
+        }
+    }
+
+    private fun readAndPreviewImport(uri: Uri) {
+        try {
+            val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                ByteArrayOutputStream().use { output ->
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        total += read
+                        if (total > ImportBatchParser.MAX_FILE_BYTES) {
+                            throw IllegalArgumentException("Il file supera il limite di 512 KB.")
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                    output.toByteArray()
+                }
+            } ?: throw IllegalArgumentException("Non riesco a leggere il file selezionato.")
+            val batch = ImportBatchParser.parse(String(bytes, Charsets.UTF_8))
+            val collision = findImportCollision(batch)
+            if (collision != null) {
+                showImportError("Orario in conflitto", collision)
+                return
+            }
+            showImportPreview(batch)
+        } catch (e: Exception) {
+            showImportError("File non importato", e.message ?: "Il file non è valido.")
+        }
+    }
+
+    private fun showImportPreview(batch: ImportedBatch) {
+        val replacing = Store.countBatch(this, batch.batchId)
+        val first = batch.schedules.mapNotNull { it.nextAt }.minOrNull()
+        val preview = buildString {
+            append("Parole chiave: ${batch.keywordCount}\n")
+            append("Messaggi: ${batch.messageCount}\n")
+            append("Invii giornalieri: ${batch.schedules.size}\n")
+            append("Primo invio: ${first?.let { fmt.format(it) } ?: "—"}\n")
+            append("Batch: ${batch.batchId}\n\n")
+            append("Tutti gli invii si ripeteranno ogni giorno, senza scadenza.")
+            if (replacing > 0) {
+                append("\n\nSaranno sostituite le $replacing programmazioni importate in precedenza con questo batchId.")
+            }
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Confermi l'importazione?")
+            .setMessage(preview)
+            .setNegativeButton("Annulla", null)
+            .setPositiveButton("Importa") { _, _ -> importBatch(batch) }
+            .show()
+    }
+
+    private fun importBatch(batch: ImportedBatch) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !getSystemService(AlarmManager::class.java).canScheduleExactAlarms()) {
+            startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+            toast("Consenti gli allarmi precisi e ripeti l'importazione")
+            return
+        }
+        val replaced = Store.replaceBatch(this, batch.batchId, batch.schedules)
+        refresh()
+        toast(if (replaced == 0) {
+            "Importate ${batch.schedules.size} programmazioni giornaliere"
+        } else {
+            "Aggiornato il batch: ${batch.schedules.size} programmazioni giornaliere"
+        })
+    }
+
+    private fun findImportCollision(batch: ImportedBatch): String? {
+        val importedMinutes = batch.schedules.mapNotNull { it.nextAt?.let(::minuteOfDay) }.toSet()
+        val now = System.currentTimeMillis()
+        for (existing in Store.all(this)) {
+            if (existing.sourceBatchId == batch.batchId) continue
+            val collides = when (existing.repeatMode) {
+                "none" -> existing.times.any { it > now && minuteOfDay(it) in importedMinutes }
+                "daily" -> existing.nextAt?.let { minuteOfDay(it) in importedMinutes } == true
+                "weekly" -> existing.nextAt?.let { at ->
+                    val calendar = Calendar.getInstance().apply { timeInMillis = at }
+                    calendar.get(Calendar.DAY_OF_WEEK) in existing.weekdays && minuteOfDay(at) in importedMinutes
+                } == true
+                else -> false
+            }
+            if (collides) return "Uno degli orari del file coincide con la programmazione \"${existing.name}\". Sposta l'orario o elimina la programmazione in conflitto prima di importare."
+        }
+        return null
+    }
+
+    private fun minuteOfDay(at: Long): Int = Calendar.getInstance().run {
+        timeInMillis = at
+        get(Calendar.HOUR_OF_DAY) * 60 + get(Calendar.MINUTE)
+    }
+
+    private fun showImportError(title: String, message: String) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun showImportHelp() {
+        val example = """{
+  "version": 1,
+  "batchId": "campagna-novembre",
+  "phone": "+393331234567",
+  "times": ["09:00", "14:30"],
+  "keywords": [
+    {
+      "keyword": "PROMO",
+      "messages": [
+        {"name": "Promo mattina", "text": "La PROMO di oggi è pronta."},
+        {"name": "Promo sera", "text": "Ricorda la PROMO di stasera.", "times": ["18:00"]}
+      ]
+    }
+  ]
+}"""
+        val message = "Usa un file UTF-8 con estensione .json. Orari in formato 24 ore HH:mm; gli orari del messaggio sovrascrivono quelli del gruppo, che a loro volta sovrascrivono i valori predefiniti. Il testo di ogni messaggio deve contenere la sua parola chiave e ogni orario deve essere assegnato a un solo invio. Il primo invio sarà al prossimo orario futuro; poi si ripeterà ogni giorno. Reimportando lo stesso batchId, aggiorni quel gruppo senza duplicarlo.\n\n" + example
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Formato file JSON")
+            .setMessage(message)
+            .setNegativeButton("Chiudi", null)
+            .setPositiveButton("Copia esempio") { _, _ ->
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("Modello importazione WA Schedule", example))
+                toast("Esempio copiato negli appunti")
+            }
+            .show()
+    }
+
     @Deprecated("plain Activity, no AndroidX")
     override fun onActivityResult(req: Int, res: Int, data: Intent?) {
         super.onActivityResult(req, res, data)
-        if (req != 1 || res != RESULT_OK) return
+        if (res != RESULT_OK) return
         val uri = data?.data ?: return
+        if (req == 2) {
+            readAndPreviewImport(uri)
+            return
+        }
+        if (req != 1) return
         // ACTION_PICK grants access to this row; no READ_CONTACTS permission is needed.
         contentResolver.query(uri, arrayOf(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,

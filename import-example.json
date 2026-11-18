@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "batchId": "campagna-novembre",
+  "phone": "+393331234567",
+  "times": ["09:00", "14:30"],
+  "keywords": [
+    {
+      "keyword": "PROMO",
+      "messages": [
+        {
+          "name": "Promo mattina",
+          "text": "La PROMO di oggi è pronta."
+        },
+        {
+          "name": "Promo sera",
+          "text": "Ricorda la PROMO di stasera.",
+          "times": ["18:00"]
+        }
+      ]
+    }
+  ]
+}
