@@ -31,7 +31,30 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Build debug APK
-        run: chmod +x gradlew && ./gradlew --no-daemon --stacktrace assembleDebug
+        shell: bash
+        run: |
+          chmod +x gradlew
+          log_file="$RUNNER_TEMP/gradle-build.log"
+          for attempt in 1 2 3; do
+            set +e
+            ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee "$log_file"
+            build_status=${PIPESTATUS[0]}
+            set -e
+
+            if [[ "$build_status" -eq 0 ]]; then
+              exit 0
+            fi
+            if ! grep -Eiq 'HTTP.*429|status code 429|Too Many Requests' "$log_file"; then
+              exit "$build_status"
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              exit "$build_status"
+            fi
+
+            delay=$((attempt * 20))
+            echo "Maven returned HTTP 429; retrying the Gradle build in ${delay}s (attempt $((attempt + 1))/3)."
+            sleep "$delay"
+          done
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v6
